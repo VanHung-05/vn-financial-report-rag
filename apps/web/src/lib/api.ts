@@ -121,6 +121,30 @@ export const api = {
   createDocument: (body: DocumentCreate) =>
     request<Document>("/documents", { method: "POST", body: JSON.stringify(body) }),
 
+  uploadDocument: async (file: File, meta: { title?: string; ticker?: string; report_type?: string; fiscal_year?: string; fiscal_quarter?: string }) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (meta.title) form.append("title", meta.title);
+    if (meta.ticker) form.append("ticker", meta.ticker);
+    if (meta.report_type) form.append("report_type", meta.report_type);
+    if (meta.fiscal_year) form.append("fiscal_year", meta.fiscal_year);
+    if (meta.fiscal_quarter) form.append("fiscal_quarter", meta.fiscal_quarter);
+
+    const res = await fetch(`${API_BASE}/documents/upload`, {
+      method: "POST",
+      body: form,
+      // No Content-Type header — browser sets it with boundary for multipart
+    });
+    if (!res.ok) {
+      let body: unknown;
+      try { body = await res.json(); } catch { body = await res.text(); }
+      const detail = typeof body === "object" && body && "detail" in body
+        ? String((body as { detail: unknown }).detail) : res.statusText;
+      throw new ApiError(detail || `HTTP ${res.status}`, res.status, body);
+    }
+    return res.json() as Promise<Document>;
+  },
+
   getDocumentStatus: (id: string) =>
     request<Pick<Document, "id" | "status" | "progress" | "current_step" | "error_message" | "total_chunks" | "processed_chunks">>(
       `/documents/${id}/status`,

@@ -89,6 +89,26 @@ def auto_seed():
             if not source_url:
                 continue
 
+            # --- Dedupe: skip if source_url already exists ---
+            url_exists = db.execute(
+                sa_text("SELECT id FROM documents WHERE source_url=:url LIMIT 1"),
+                {"url": source_url},
+            ).first()
+            if url_exists:
+                logger.debug("Auto-seed skip (URL duplicate): %s", record.get("ticker"))
+                continue
+
+            # --- Dedupe: skip if file_sha256 already exists ---
+            file_sha256 = record.get("file_sha256")
+            if file_sha256:
+                sha_exists = db.execute(
+                    sa_text("SELECT id FROM documents WHERE file_sha256=:sha LIMIT 1"),
+                    {"sha": file_sha256},
+                ).first()
+                if sha_exists:
+                    logger.debug("Auto-seed skip (SHA-256 duplicate): %s", record.get("ticker"))
+                    continue
+
             ticker = record.get("ticker")
             company_id = None
             if ticker:

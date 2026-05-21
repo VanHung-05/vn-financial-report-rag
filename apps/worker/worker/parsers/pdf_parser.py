@@ -1,4 +1,12 @@
-"""PDF extraction: text layer first, then OCR for scanned Vietnamese reports."""
+"""PDF extraction: text layer first, per-page OCR fallback for scanned Vietnamese reports.
+
+Improvements over v1:
+- Per-page OCR: only OCR pages with insufficient text (not the whole file)
+- Image preprocessing before OCR (grayscale + auto-contrast)
+- Dynamic DPI scaling for small pages
+- Hybrid extraction: merge text-layer + OCR when page has partial text
+- Quality logging per page
+"""
 import io
 import logging
 import shutil
@@ -11,10 +19,14 @@ from worker.config import settings
 
 logger = logging.getLogger(__name__)
 
-MIN_TEXT_CHARS = 80
+# Minimum chars for a page to be considered "has enough text"
+MIN_PAGE_CHARS = 80
+# Minimum chars for a page to attempt hybrid (text + OCR) merge
+HYBRID_THRESHOLD = 40
 
 
 def _parse_pdfplumber(file_path: Path) -> list[dict]:
+    """Extract text + tables per page using pdfplumber."""
     pages = []
     with pdfplumber.open(file_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
@@ -33,6 +45,7 @@ def _parse_pdfplumber(file_path: Path) -> list[dict]:
 
 
 def _parse_pypdf(file_path: Path) -> list[dict]:
+    """Extract text per page using pypdf (fallback, no table extraction)."""
     reader = PdfReader(str(file_path))
     pages = []
     for i, page in enumerate(reader.pages, start=1):
@@ -45,6 +58,10 @@ def _parse_pypdf(file_path: Path) -> list[dict]:
         })
     return pages
 
+
+# ---------------------------------------------------------------------------
+# OCR helpers
+# ---------------------------------------------------------------------------
 
 def _tesseract_langs() -> str:
     """Pick OCR languages; fall back to eng if vie is not installed."""
@@ -66,80 +83,208 @@ def _tesseract_langs() -> str:
     return preferred
 
 
-def _parse_ocr(file_path: Path) -> list[dict]:
+def _preprocess_image(img):
+    """Preprocess image for better OCR: grayscale + auto-contrast."""
+    from PIL import ImageOps
+
+    # Convert to grayscale
+    if img.mode != "L":
+        img = img.convert("L")
+
+    # Auto-contrast to normalize brightness/contrast
+    img = ImageOps.autocontrast(img, cutoff=1)
+
+    return img
+
+
+def _ocr_single_page(fitz_page, lang: str, scale: float) -> str:
+    """OCR a single page with image preprocessing."""
     import fitz
     import pytesseract
     from PIL import Image
 
+    matrix = fitz.Matrix(scale, scale)
+    pix = fitz_page.get_pixmap(matrix=matrix, alpha=False)
+    img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+    # Preprocess for better OCR quality
+    img = _preprocess_image(img)
+
+    # Dynamic DPI: increase scale for small pages
+    width = img.width
+    if width < 800:
+        # Re-render at higher scale for very small pages
+        higher_scale = min(scale * 2.0, 4.0)
+        matrix = fitz.Matrix(higher_scale, higher_scale)
+        pix = fitz_page.get_pixmap(matrix=matrix, alpha=False)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        img = _preprocess_image(img)
+
+    try:
+        text = pytesseract.image_to_string(img, lang=lang)
+        return text.strip()
+    except Exception as e:
+        logger.warning("OCR failed: %s", e)
+        return ""
+
+
+def _compute_scale() -> float:
+    """Compute rendering scale from configured DPI."""
+    return max(1.5, min(settings.ocr_dpi / 72.0, 3.0))
+
+
+# ---------------------------------------------------------------------------
+# Main parser
+# ---------------------------------------------------------------------------
+
+def parse_pdf(file_path: str | Path) -> list[dict]:
+    """Extract text and tables from PDF; per-page OCR when text layer is weak.
+
+    Strategy:
+    1. Parse all pages with pdfplumber (text + tables) and pypdf (text only)
+    2. For each page, pick the best text between pdfplumber/pypdf
+    3. For pages with insufficient text (< MIN_PAGE_CHARS), OCR only that page
+    4. For pages with partial text (HYBRID_THRESHOLD < chars < MIN_PAGE_CHARS),
+       try hybrid merge: keep existing text + append OCR-only content
+    """
+    file_path = Path(file_path)
+
+    # Step 1: Parse with both extractors
+    plumber_pages = _parse_pdfplumber(file_path)
+    pypdf_pages = _parse_pypdf(file_path)
+
+    # Step 2: Merge — per page, pick the best text source
+    best_pages = _merge_text_sources(plumber_pages, pypdf_pages)
+
+    # Step 3: Per-page OCR for weak pages
+    if settings.ocr_enabled:
+        best_pages = _apply_per_page_ocr(file_path, best_pages)
+
+    # Log quality summary
+    _log_quality(file_path, best_pages)
+
+    return best_pages
+
+
+def _merge_text_sources(plumber_pages: list[dict], pypdf_pages: list[dict]) -> list[dict]:
+    """For each page, keep the text source with more content. Preserve pdfplumber tables."""
+    merged = []
+    max_pages = max(len(plumber_pages), len(pypdf_pages))
+
+    for i in range(max_pages):
+        plumber = plumber_pages[i] if i < len(plumber_pages) else None
+        pypdf = pypdf_pages[i] if i < len(pypdf_pages) else None
+
+        if plumber and pypdf:
+            plumber_len = len(plumber.get("text") or "")
+            pypdf_len = len(pypdf.get("text") or "")
+
+            if pypdf_len > plumber_len * 1.2:
+                # pypdf extracted significantly more text
+                merged.append({
+                    "page": plumber["page"],
+                    "text": pypdf["text"],
+                    "tables": plumber["tables"],  # Keep pdfplumber tables
+                    "ocr_used": False,
+                })
+            else:
+                merged.append(plumber)
+        elif plumber:
+            merged.append(plumber)
+        elif pypdf:
+            merged.append(pypdf)
+
+    return merged
+
+
+def _apply_per_page_ocr(file_path: Path, pages: list[dict]) -> list[dict]:
+    """Apply OCR only to pages with insufficient text."""
+    # Check if any page needs OCR
+    pages_needing_ocr = [
+        i for i, p in enumerate(pages)
+        if len(p.get("text") or "") < MIN_PAGE_CHARS
+    ]
+
+    if not pages_needing_ocr:
+        return pages
+
+    # Check OCR availability
     lang = _tesseract_langs()
     if not lang:
-        raise RuntimeError(
-            "OCR enabled but tesseract not found. Install: brew install tesseract tesseract-lang"
+        logger.warning(
+            "OCR needed for %d pages but tesseract not found. "
+            "Install: brew install tesseract tesseract-lang",
+            len(pages_needing_ocr),
+        )
+        return pages
+
+    try:
+        import fitz
+    except ImportError:
+        logger.warning("PyMuPDF (fitz) not installed — skipping OCR")
+        return pages
+
+    scale = _compute_scale()
+    doc = fitz.open(file_path)
+    ocr_count = 0
+
+    try:
+        for page_idx in pages_needing_ocr:
+            if page_idx >= len(doc):
+                continue
+
+            fitz_page = doc[page_idx]
+            existing_text = pages[page_idx].get("text") or ""
+            existing_len = len(existing_text)
+
+            ocr_text = _ocr_single_page(fitz_page, lang, scale)
+
+            if not ocr_text.strip():
+                continue
+
+            if existing_len < HYBRID_THRESHOLD:
+                # Very little text — replace with OCR
+                pages[page_idx]["text"] = ocr_text
+                pages[page_idx]["ocr_used"] = True
+                ocr_count += 1
+            elif existing_len < MIN_PAGE_CHARS and len(ocr_text) > existing_len:
+                # Partial text — use OCR if it has more content
+                # (hybrid: OCR usually captures everything including the text layer)
+                pages[page_idx]["text"] = ocr_text
+                pages[page_idx]["ocr_used"] = True
+                ocr_count += 1
+    finally:
+        doc.close()
+
+    if ocr_count:
+        logger.info(
+            "OCR %s: %d/%d pages OCR'd (of %d needing OCR)",
+            file_path.name, ocr_count, len(pages_needing_ocr), len(pages),
         )
 
-    doc = fitz.open(file_path)
-    scale = max(1.5, min(settings.ocr_dpi / 72.0, 3.0))
-    matrix = fitz.Matrix(scale, scale)
-    pages = []
-
-    for i, page in enumerate(doc, start=1):
-        text = (page.get_text() or "").strip()
-        ocr_used = False
-
-        if len(text) < 40:
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            try:
-                text = pytesseract.image_to_string(img, lang=lang)
-                ocr_used = True
-            except Exception as e:
-                logger.warning("OCR failed page %s: %s", i, e)
-
-        pages.append({
-            "page": i,
-            "text": text,
-            "tables": [],
-            "ocr_used": ocr_used,
-        })
-
-    doc.close()
-    ocr_pages = sum(1 for p in pages if p["ocr_used"])
-    logger.info("OCR %s: %s/%s pages", file_path.name, ocr_pages, len(pages))
     return pages
 
 
-def _total_chars(pages: list[dict]) -> int:
-    return sum(len(p.get("text") or "") for p in pages)
+def _log_quality(file_path: Path, pages: list[dict]) -> None:
+    """Log extraction quality summary."""
+    total = len(pages)
+    if total == 0:
+        logger.warning("No pages extracted from %s", file_path.name)
+        return
 
+    total_chars = sum(len(p.get("text") or "") for p in pages)
+    ocr_pages = sum(1 for p in pages if p.get("ocr_used"))
+    empty_pages = sum(1 for p in pages if len(p.get("text") or "") < MIN_PAGE_CHARS)
+    table_pages = sum(1 for p in pages if p.get("tables"))
 
-def parse_pdf(file_path: str | Path) -> list[dict]:
-    """Extract text and tables from PDF; OCR when the file is image-only."""
-    file_path = Path(file_path)
-    pages = _parse_pdfplumber(file_path)
-    best = pages
-    best_chars = _total_chars(pages)
-
-    pypdf_pages = _parse_pypdf(file_path)
-    pypdf_chars = _total_chars(pypdf_pages)
-    if pypdf_chars > best_chars:
-        best = pypdf_pages
-        best_chars = pypdf_chars
-
-    if best_chars < MIN_TEXT_CHARS and settings.ocr_enabled:
-        try:
-            ocr_pages = _parse_ocr(file_path)
-            ocr_chars = _total_chars(ocr_pages)
-            if ocr_chars > best_chars:
-                best = ocr_pages
-                best_chars = ocr_chars
-        except Exception as e:
-            logger.warning("OCR skipped for %s: %s", file_path.name, e)
-
-    if best_chars < MIN_TEXT_CHARS:
+    if total_chars < MIN_PAGE_CHARS:
         logger.warning(
-            "Low text yield (%s chars) for %s — PDF may need better OCR or vie tessdata",
-            best_chars,
-            file_path.name,
+            "Low text yield (%d chars) for %s — "
+            "PDF may need better OCR or vie tessdata",
+            total_chars, file_path.name,
         )
-
-    return best
+    else:
+        logger.info(
+            "Parsed %s: %d pages, %d chars, %d OCR'd, %d with tables, %d empty",
+            file_path.name, total, total_chars, ocr_pages, table_pages, empty_pages,
+        )

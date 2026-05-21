@@ -5,6 +5,7 @@ import logging
 import tempfile
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import UUID
 
 import httpx
@@ -39,6 +40,54 @@ EXT_TO_PARSER = {
     ".html": parse_html,
     ".htm": parse_html,
 }
+
+# Reverse map: Content-Type → extension
+_MIME_TO_EXT = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-excel": ".xls",
+    "text/csv": ".csv",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "text/plain": ".txt",
+    "text/html": ".html",
+}
+
+
+def _infer_extension(original_filename: str | None, url: str | None) -> str:
+    """Infer file extension from original_filename or URL.
+
+    Returns extension like '.pdf' or '' if unknown.
+    """
+    # 1) From original_filename
+    if original_filename:
+        ext = Path(original_filename).suffix.lower()
+        if ext and ext in EXT_TO_PARSER:
+            return ext
+
+    # 2) From URL path (handles URL-encoded paths like QUY%201/FPT_xxx.pdf)
+    if url:
+        parsed = urlparse(url)
+        path = unquote(parsed.path)  # Decode %20, %25 etc.
+        ext = Path(path).suffix.lower()
+        if ext and ext in EXT_TO_PARSER:
+            return ext
+
+    return ""
+
+
+def _mime_to_ext(content_type: str) -> str:
+    """Convert a Content-Type string to a file extension."""
+    return _MIME_TO_EXT.get(content_type.lower(), "")
+
+
+def _infer_filename_from_url(url: str) -> str | None:
+    """Extract a meaningful filename from a URL path."""
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    name = Path(path).name
+    if name and len(name) > 3 and "." in name:
+        return name
+    return None
 
 
 def _update_status(db: Session, doc_id: str, status: str, step: str, progress: int, error: str | None = None):
@@ -92,17 +141,58 @@ def _run_ingestion(db: Session, document_id: str):
 
     _update_status(db, document_id, "downloading", "downloading", 5)
 
-    # Download file
+    # Determine file source: local path or remote URL
     download_url = row["storage_url"] or row["source_url"]
     if not download_url:
-        raise ValueError("No download URL available")
+        raise ValueError("No download URL and no storage path available")
 
-    with tempfile.NamedTemporaryFile(suffix=Path(row["original_filename"] or "file").suffix, delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-        with httpx.Client(timeout=120, follow_redirects=True) as client:
-            resp = client.get(download_url)
-            resp.raise_for_status()
-            tmp.write(resp.content)
+    # Check if storage_url is a local file path (from file upload)
+    local_path = Path(download_url) if not download_url.startswith(("http://", "https://")) else None
+
+    if local_path and local_path.exists():
+        # --- Local file upload: use file directly ---
+        logger.info("Using local file: %s", local_path.name)
+        ext = _infer_extension(row["original_filename"], str(local_path))
+
+        # Copy to temp file (so we can safely delete later without losing the upload)
+        import shutil
+        with tempfile.NamedTemporaryFile(suffix=ext or local_path.suffix or ".pdf", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        shutil.copy2(local_path, tmp_path)
+
+    else:
+        # --- Remote URL: download via HTTP ---
+        ext = _infer_extension(row["original_filename"], download_url)
+
+        with tempfile.NamedTemporaryFile(suffix=ext or ".pdf", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            with httpx.Client(timeout=120, follow_redirects=True) as client:
+                resp = client.get(download_url)
+                resp.raise_for_status()
+                tmp.write(resp.content)
+
+                # If still no extension, try Content-Type header
+                if not ext:
+                    content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+                    ext = _mime_to_ext(content_type)
+                    if ext:
+                        new_path = tmp_path.with_suffix(ext)
+                        tmp_path.rename(new_path)
+                        tmp_path = new_path
+                    if content_type:
+                        db.execute(
+                            sa_text("UPDATE documents SET mime_type=:mime WHERE id=:id AND mime_type IS NULL"),
+                            {"mime": content_type, "id": document_id},
+                        )
+
+        # Update original_filename in DB if missing (inferred from URL)
+        if not row["original_filename"] and download_url:
+            inferred_name = _infer_filename_from_url(download_url)
+            if inferred_name:
+                db.execute(
+                    sa_text("UPDATE documents SET original_filename=:fname WHERE id=:id AND original_filename IS NULL"),
+                    {"fname": inferred_name, "id": document_id},
+                )
 
     # Compute SHA-256
     sha256 = hashlib.sha256(tmp_path.read_bytes()).hexdigest()
@@ -112,12 +202,38 @@ def _run_ingestion(db: Session, document_id: str):
     )
     db.commit()
 
+    # --- Dedupe: check if another document with the same SHA-256 is already ready ---
+    dup_row = db.execute(
+        sa_text(
+            "SELECT id, title, status FROM documents "
+            "WHERE file_sha256=:sha AND id!=:current_id AND status='ready' "
+            "LIMIT 1"
+        ),
+        {"sha": sha256, "current_id": document_id},
+    ).mappings().first()
+
+    if dup_row:
+        tmp_path.unlink(missing_ok=True)
+        dup_id = str(dup_row["id"])
+        dup_title = dup_row["title"] or dup_id[:8]
+        msg = (
+            f"Trùng nội dung với document đã index: {dup_title} "
+            f"(id: {dup_id}, SHA-256 match). Bỏ qua xử lý."
+        )
+        logger.info("Duplicate detected for %s: matches %s", document_id, dup_id)
+        _update_status(db, document_id, "failed", "duplicate", 0, msg)
+        return
+
     # Determine parser
     _update_status(db, document_id, "extracting_text", "extracting_text", 15)
     ext = tmp_path.suffix.lower()
     parser = EXT_TO_PARSER.get(ext)
     if not parser and row["mime_type"]:
         parser = MIME_TO_PARSER.get(row["mime_type"])
+    # Last resort: try Content-Type from response
+    if not parser:
+        content_type = resp.headers.get("content-type", "").split(";")[0].strip() if 'resp' in dir() else ""
+        parser = MIME_TO_PARSER.get(content_type)
     if not parser:
         raise ValueError(f"No parser for extension={ext} mime={row['mime_type']}")
 

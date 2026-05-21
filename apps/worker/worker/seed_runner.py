@@ -76,6 +76,7 @@ def _process_record(db, queue, record: dict, results: dict):
     source_url = record.get("source_url")
     if not source_url:
         results["skipped"] += 1
+        logger.debug("Skipped: no source_url in record %s", record.get("id"))
         return
 
     # Check if already exists by source_url
@@ -86,7 +87,20 @@ def _process_record(db, queue, record: dict, results: dict):
 
     if existing:
         results["skipped"] += 1
+        logger.debug("Skipped (source_url duplicate): %s", record.get("ticker"))
         return
+
+    # Check if file_sha256 already exists (if manifest provides it)
+    file_sha256 = record.get("file_sha256")
+    if file_sha256:
+        sha_existing = db.execute(
+            sa_text("SELECT id FROM documents WHERE file_sha256=:sha LIMIT 1"),
+            {"sha": file_sha256},
+        ).first()
+        if sha_existing:
+            results["skipped"] += 1
+            logger.debug("Skipped (SHA-256 duplicate): %s — %s", record.get("ticker"), file_sha256[:12])
+            return
 
     # Ensure company exists
     ticker = record.get("ticker")
