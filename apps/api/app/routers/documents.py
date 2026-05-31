@@ -166,16 +166,52 @@ async def upload_document(
     file_path.write_bytes(content)
 
     # Resolve company
-    company_id = None
-    if ticker.strip():
-        from app.models.company import Company
+    inferred_ticker = ticker.strip()
+    if not inferred_ticker and file.filename:
+        # Check if filename has prefix like 'FPT_' or 'FPT '
+        fname = file.filename
+        if "_" in fname:
+            possible_ticker = fname.split("_")[0].strip().upper()
+            if possible_ticker.isalnum() and 3 <= len(possible_ticker) <= 5:
+                inferred_ticker = possible_ticker
 
+    company_id = None
+    if inferred_ticker:
+        from app.models.company import Company
         result = await db.execute(
-            select(Company).where(Company.ticker == ticker.strip().upper())
+            select(Company).where(Company.ticker == inferred_ticker.upper())
         )
         co = result.scalar_one_or_none()
         if co:
             company_id = co.id
+        else:
+            # Load company info from seeds CSV if available, otherwise default
+            name = f"CTCP {inferred_ticker.upper()}"
+            exchange = "HOSE"
+            csv_path = Path(__file__).resolve().parents[4] / "samples" / "manifests" / "companies_seed.csv"
+            if csv_path.exists():
+                import csv
+                try:
+                    with open(csv_path, "r", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            t = row.get("ticker", "").strip().upper()
+                            if t == inferred_ticker.upper():
+                                name = row.get("company_name", name).strip()
+                                exchange = row.get("exchange", exchange).strip()
+                                break
+                except Exception:
+                    pass
+            # Create new company dynamically
+            new_co = Company(
+                id=uuid.uuid4(),
+                ticker=inferred_ticker.upper(),
+                name=name,
+                exchange=exchange
+            )
+            db.add(new_co)
+            await db.flush()
+            company_id = new_co.id
 
     # Create document record
     doc = Document(

@@ -8,7 +8,7 @@ export default function Home() {
       {/* Background Neon Glows */}
       <div className="absolute top-0 left-1/4 -z-10 h-[500px] w-[500px] rounded-full bg-brand-500/10 blur-[120px]" />
       <div className="absolute top-1/3 right-1/4 -z-10 h-[400px] w-[400px] rounded-full bg-emerald-500/10 blur-[120px]" />
-      
+
       {/* Decorative Financial Stock Wave Grid */}
       <div className="absolute top-20 right-0 -z-10 w-full max-w-3xl opacity-20 pointer-events-none">
         <svg viewBox="0 0 1000 600" className="w-full h-auto text-emerald-500" fill="none" stroke="currentColor">
@@ -51,14 +51,14 @@ export default function Home() {
           </nav>
 
           <div className="flex items-center gap-3">
-            <Link 
-              href="/documents" 
+            <Link
+              href="/documents"
               className="rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-2 text-xs font-semibold text-ink-200 hover:bg-ink-800 hover:text-white transition-all"
             >
               Quản trị
             </Link>
-            <Link 
-              href="/chat" 
+            <Link
+              href="/chat"
               className="rounded-xl bg-gradient-to-r from-brand-600 to-brand-500 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-brand-500/20 hover:from-brand-500 hover:to-brand-400 hover:shadow-brand-500/30 hover:scale-[1.02] transition-all"
             >
               Bắt đầu hỏi ngay →
@@ -78,15 +78,15 @@ export default function Home() {
               </svg>
               <span>RAG Thế Hệ Mới Chuyên Biệt BCTC</span>
             </div>
-            
+
             <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl leading-[1.1]">
               Trợ lý AI Phân tích <br />
               <span className="bg-gradient-to-r from-white via-ink-100 to-ink-300 bg-clip-text text-transparent">
                 Báo cáo Tài chính
               </span> <br />
-              Việt Nam vượt trội
+              Việt Nam
             </h1>
-            
+
             <p className="mt-6 text-lg text-ink-300 leading-relaxed max-w-2xl">
               FinRAG mang lại độ chính xác số liệu tuyệt đối cho hoạt động đối soát tài chính nhờ cơ chế Định tuyến thông minh, đối soát số liệu SQL Database và RAG lai xếp hạng RRF thế hệ mới.
             </p>
@@ -118,7 +118,7 @@ export default function Home() {
             <div className="relative rounded-2xl border border-ink-800/80 bg-ink-900/70 p-6 shadow-2xl shadow-black/50 backdrop-blur-md overflow-hidden group">
               {/* Background accent glow */}
               <div className="absolute -top-10 -right-10 h-32 w-32 rounded-full bg-white/5 blur-[35px]" />
-              
+
               <div className="flex items-center justify-between border-b border-ink-800/80 pb-4 mb-5">
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />

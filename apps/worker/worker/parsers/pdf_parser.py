@@ -197,6 +197,60 @@ def _merge_text_sources(plumber_pages: list[dict], pypdf_pages: list[dict]) -> l
     return merged
 
 
+def _ocr_gemini_vision(img_bytes: bytes, api_key: str, model: str) -> str:
+    """OCR a single page image using Gemini Vision API."""
+    import base64
+    import httpx
+    
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    params = {"key": api_key}
+    
+    prompt = (
+        "Bạn là một công cụ OCR chuyên nghiệp được tối ưu cho các tài liệu và báo cáo tài chính tiếng Việt. "
+        "Hãy trích xuất toàn bộ chữ viết và tất cả số liệu trong ảnh báo cáo tài chính này một cách cực kỳ chính xác. "
+        "LƯU Ý CỰC KỲ QUAN TRỌNG:\n"
+        "- Giữ nguyên các chữ tiếng Việt có dấu (diacritics), không làm mất dấu hay sai chính tả.\n"
+        "- Giữ cấu trúc dòng và bảng số liệu nếu có để dễ dàng đọc và đối chiếu số liệu.\n"
+        "- Chỉ trả về văn bản trích xuất được từ tài liệu, không giải thích dài dòng hay thêm bớt gì khác ngoài nội dung tài liệu."
+    )
+    
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": img_b64
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 4096
+        }
+    }
+    
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(url, params=params, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text_parts = [p.get("text", "") for p in parts if "text" in p]
+                return "".join(text_parts).strip()
+    except Exception as e:
+        logger.warning("Gemini Vision OCR failed, falling back: %s", e)
+    return ""
+
+
 def _apply_per_page_ocr(file_path: Path, pages: list[dict]) -> list[dict]:
     """Apply OCR only to pages with insufficient text."""
     # Check if any page needs OCR
@@ -208,25 +262,18 @@ def _apply_per_page_ocr(file_path: Path, pages: list[dict]) -> list[dict]:
     if not pages_needing_ocr:
         return pages
 
-    # Check OCR availability
-    lang = _tesseract_langs()
-    if not lang:
-        logger.warning(
-            "OCR needed for %d pages but tesseract not found. "
-            "Install: brew install tesseract tesseract-lang",
-            len(pages_needing_ocr),
-        )
-        return pages
-
     try:
         import fitz
     except ImportError:
         logger.warning("PyMuPDF (fitz) not installed — skipping OCR")
         return pages
 
-    scale = _compute_scale()
     doc = fitz.open(file_path)
     ocr_count = 0
+
+    has_gemini = bool(settings.gemini_api_key)
+    lang = _tesseract_langs()
+    scale = _compute_scale()
 
     try:
         for page_idx in pages_needing_ocr:
@@ -237,7 +284,25 @@ def _apply_per_page_ocr(file_path: Path, pages: list[dict]) -> list[dict]:
             existing_text = pages[page_idx].get("text") or ""
             existing_len = len(existing_text)
 
-            ocr_text = _ocr_single_page(fitz_page, lang, scale)
+            ocr_text = ""
+
+            # Try Gemini Vision OCR first if enabled
+            if has_gemini:
+                logger.info("Page %d has insufficient text. Attempting Gemini Vision OCR...", page_idx + 1)
+                try:
+                    # Render at slightly higher quality for Gemini
+                    gemini_matrix = fitz.Matrix(2.0, 2.0)
+                    pix = fitz_page.get_pixmap(matrix=gemini_matrix, alpha=False)
+                    img_bytes = pix.tobytes("png")
+                    model = settings.llm_model or "gemini-3.1-flash-lite"
+                    ocr_text = _ocr_gemini_vision(img_bytes, settings.gemini_api_key, model)
+                except Exception as e:
+                    logger.warning("Failed to render page or call Gemini Vision OCR: %s", e)
+
+            # Fallback to local Tesseract OCR
+            if not ocr_text.strip() and lang:
+                logger.info("Falling back to local Tesseract OCR for page %d...", page_idx + 1)
+                ocr_text = _ocr_single_page(fitz_page, lang, scale)
 
             if not ocr_text.strip():
                 continue
@@ -249,7 +314,6 @@ def _apply_per_page_ocr(file_path: Path, pages: list[dict]) -> list[dict]:
                 ocr_count += 1
             elif existing_len < MIN_PAGE_CHARS and len(ocr_text) > existing_len:
                 # Partial text — use OCR if it has more content
-                # (hybrid: OCR usually captures everything including the text layer)
                 pages[page_idx]["text"] = ocr_text
                 pages[page_idx]["ocr_used"] = True
                 ocr_count += 1

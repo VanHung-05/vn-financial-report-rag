@@ -24,8 +24,8 @@ class Settings(BaseSettings):
 
     embedding_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
-    embedding_model: str = "nomic-embed-text"
-    embedding_dimensions: int = 768
+    embedding_model: str = "bge-m3"
+    embedding_dimensions: int = 1024
 
     llm_provider: str = "gemini"
     gemini_api_key: str = ""

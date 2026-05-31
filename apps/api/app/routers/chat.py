@@ -390,6 +390,40 @@ async def _retrieve_chunks(
     """
     candidate_limit = max(30, top_k * 2)
 
+    # Resolve company scope dynamically based on query tickers + explicit scope filters
+    from app.models.company import Company
+    
+    # Fetch all tickers
+    result = await db.execute(select(Company.id, Company.ticker))
+    companies = result.all()
+    ticker_to_id = {c.ticker.strip().upper(): c.id for c in companies}
+    
+    detected_company_ids = []
+    
+    # Check explicit scope filter
+    if scope_filter and "company_id" in scope_filter and scope_filter["company_id"]:
+        detected_company_ids = [scope_filter["company_id"]]
+    elif scope_filter and "ticker" in scope_filter and scope_filter["ticker"]:
+        t_val = scope_filter["ticker"].strip().upper()
+        if t_val in ticker_to_id:
+            detected_company_ids = [ticker_to_id[t_val]]
+            
+    # Auto-detect ticker from query text if no explicit scope is active
+    if not detected_company_ids:
+        query_upper = query.upper()
+        for ticker, cid in ticker_to_id.items():
+            pattern = r'\b' + re.escape(ticker) + r'\b'
+            if re.search(pattern, query_upper):
+                detected_company_ids.append(cid)
+                
+    # Build filtering clause
+    scope_clause = ""
+    sql_params = {}
+    if detected_company_ids:
+        scope_clause = "AND d.company_id = ANY(:company_ids) "
+        sql_params["company_ids"] = [uuid.UUID(str(cid)) for cid in detected_company_ids]
+        logger.info("Restricting search scope to companies: %s", detected_company_ids)
+
     # 1. Vector Search
     vector_results = []
     if settings.embedding_provider == "ollama":
@@ -405,10 +439,13 @@ async def _retrieve_chunks(
                 "FROM document_chunks c "
                 "JOIN documents d ON d.id = c.document_id "
                 "WHERE c.embedding IS NOT NULL "
+                f"{scope_clause}"
                 "ORDER BY c.embedding <=> CAST(:emb AS vector) "
                 "LIMIT :limit"
             )
-            result = await db.execute(sql, {"emb": emb_str, "limit": candidate_limit})
+            vector_params = {"emb": emb_str, "limit": candidate_limit}
+            vector_params.update(sql_params)
+            result = await db.execute(sql, vector_params)
             vector_results = [_row_to_dict(r) for r in result.mappings().all()]
         except Exception as e:
             logger.warning("Vector search failed in hybrid: %s", e)
@@ -423,12 +460,15 @@ async def _retrieve_chunks(
             "ts_rank(to_tsvector('simple', c.content), plainto_tsquery('simple', :q)) as score "
             "FROM document_chunks c "
             "JOIN documents d ON d.id = c.document_id "
-            "WHERE to_tsvector('simple', c.content) @@ plainto_tsquery('simple', :q) "
-            "OR c.content ILIKE :q_like "
+            "WHERE (to_tsvector('simple', c.content) @@ plainto_tsquery('simple', :q) "
+            "OR c.content ILIKE :q_like) "
+            f"{scope_clause}"
             "ORDER BY score DESC "
             "LIMIT :limit"
         )
-        result = await db.execute(sql, {"q": query, "q_like": f"%{query}%", "limit": candidate_limit})
+        fts_params = {"q": query, "q_like": f"%{query}%", "limit": candidate_limit}
+        fts_params.update(sql_params)
+        result = await db.execute(sql, fts_params)
         fts_results = [_row_to_dict(r) for r in result.mappings().all()]
     except Exception as e:
         logger.warning("FTS search failed in hybrid: %s", e)
@@ -454,9 +494,15 @@ async def _retrieve_chunks(
     sorted_ids = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)
 
     hybrid_results = []
+    seen_content_hashes = set()
     # RRF top hybrid results budget up to candidate_limit, to be sliced to top_k later
+    # Content-dedup: skip chunks with identical content (first 200 chars)
     for item_id in sorted_ids[:candidate_limit]:
         item = item_map[item_id]
+        content_hash = hash(item.get("content", "")[:200])
+        if content_hash in seen_content_hashes:
+            continue
+        seen_content_hashes.add(content_hash)
         item["score"] = round(rrf_scores[item_id] * 30, 2)
         hybrid_results.append(item)
 
@@ -504,9 +550,12 @@ async def _retrieve_chunks(
             "FROM document_chunks c "
             "JOIN documents d ON d.id = c.document_id "
             "WHERE c.content ILIKE :q "
+            f"{scope_clause}"
             "LIMIT :limit"
         )
-        result = await db.execute(sql, {"q": f"%{query}%", "limit": top_k})
+        fallback_params = {"q": f"%{query}%", "limit": top_k}
+        fallback_params.update(sql_params)
+        result = await db.execute(sql, fallback_params)
         rows = result.mappings().all()
         hybrid_results = [_row_to_dict(r) for r in rows]
 
