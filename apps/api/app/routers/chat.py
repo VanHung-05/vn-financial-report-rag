@@ -239,11 +239,11 @@ async def _fetch_financial_fact(db: AsyncSession, route_info: dict) -> dict | No
         "JOIN companies c ON c.id = f.company_id "
         "WHERE c.ticker = :ticker "
         "AND f.metric_name = :metric "
-        "AND f.period IN :periods "
+        "AND f.period = ANY(:periods) "
         "LIMIT 1"
     )
 
-    result = await db.execute(sql, {"ticker": ticker, "metric": db_metric, "periods": tuple(period_options)})
+    result = await db.execute(sql, {"ticker": ticker, "metric": db_metric, "periods": period_options})
     row = result.mappings().first()
     if row:
         return dict(row)

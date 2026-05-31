@@ -111,10 +111,10 @@ def count_tokens(text: str) -> int:
 
 def remove_vietnamese_accents(text: str) -> str:
     """Strip all accents from Vietnamese text."""
-    s1 = 'ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ'
-    s0 = 'AAAAEEEIIOOOOUUYaaaaeeeiioooouuyAaDdIiUuOoUuaaaaaaaaaaaaeeeeeeeeeeeeeeiiiooooooooooooouuuuuuuuuuuuyyyyyy'
-    table = str.maketrans(s1, s0)
-    return text.translate(table)
+    import unicodedata
+    text = text.replace('Đ', 'D').replace('đ', 'd')
+    nfkd_form = unicodedata.normalize('NFKD', text)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 
 _UNACCENTED_SECTION_MAP: list[tuple[re.Pattern, str]] = [
