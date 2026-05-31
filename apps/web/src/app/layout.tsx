@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/AppShell";
+import { Inter } from "next/font/google";
 import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin", "vietnamese"],
+  variable: "--font-inter",
+});
 
 export const metadata: Metadata = {
   title: "VN Financial Report RAG",
@@ -13,8 +19,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="vi">
-      <body className="font-sans">
+    <html lang="vi" className={inter.variable}>
+      <body className="font-sans antialiased">
         <AppShell>{children}</AppShell>
       </body>
     </html>

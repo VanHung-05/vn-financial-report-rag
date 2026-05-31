@@ -104,6 +104,9 @@ class SessionResponse(BaseModel):
 
 class MessageCreate(BaseModel):
     content: str
+    topK: int | None = None
+    sqlRouting: bool | None = None
+    hybridRatio: int | None = None
 
 
 class MessageResponse(BaseModel):
@@ -261,64 +264,76 @@ async def send_message(
     db.add(user_msg)
     await db.flush()
 
-    # Step 1: Query routing to SQL Fact Database
-    route_info = await _route_query(body.content)
-    if route_info.get("is_structured"):
-        logger.info("Routed query to SQL facts: %s", route_info)
-        fact_data = await _fetch_financial_fact(db, route_info)
-        if fact_data:
-            logger.info("Found exact structured fact: %s", fact_data)
-            value_formatted = format_vnd_amount(fact_data["value"])
-            user_prompt = FACT_PROMPT.format(
-                company_name=fact_data["company_name"],
-                ticker=fact_data["ticker"],
-                metric_alias=fact_data["metric_alias"] or fact_data["metric_name"],
-                metric_name=fact_data["metric_name"],
-                period=fact_data["period"],
-                value_formatted=value_formatted,
-                value=f"{fact_data['value']:,.0f}".replace(",", "."),
-                currency=fact_data["currency"] or "VND",
-                source_page=fact_data["source_page"] or "—",
-                doc_title=fact_data["doc_title"] or fact_data["original_filename"] or "Báo cáo"
-            )
-            answer = await gemini_generate(SYSTEM_PROMPT, user_prompt)
-            
-            citations_data = {
-                "is_db_verified": True,
-                "sources": [
-                    {
-                        "chunk_id": "db_fact",
-                        "document_id": str(fact_data["doc_id"]),
-                        "section": fact_data["metric_alias"] or fact_data["metric_name"],
-                        "page_start": fact_data["source_page"],
-                        "page_end": fact_data["source_page"],
-                        "company_id": None,
-                        "fiscal_year": None,
-                        "fiscal_quarter": None,
-                        "report_type": None,
-                        "report_period": fact_data["period"],
-                        "score": 1.0,
-                        "ticker": fact_data["ticker"],
-                        "company_name": fact_data["company_name"],
-                        "doc_title": fact_data["doc_title"] or fact_data["original_filename"] or "Báo cáo",
-                        "content": f"Chỉ tiêu trích xuất chính thức: {fact_data['metric_alias'] or fact_data['metric_name']}\nSố liệu: {value_formatted} ({fact_data['value']:,.0f} {fact_data['currency']})\nTài liệu: {fact_data['doc_title'] or fact_data['original_filename'] or 'Báo cáo'} · trang {fact_data['source_page'] or '—'}"
-                    }
-                ]
-            }
+    # RAG settings from client request body
+    top_k = body.topK if body.topK is not None else 15
+    sql_routing_enabled = body.sqlRouting if body.sqlRouting is not None else True
+    hybrid_ratio = body.hybridRatio if body.hybridRatio is not None else 70
 
-            assistant_msg = ChatMessage(
-                session_id=session_id,
-                role="assistant",
-                content=answer,
-                citations=citations_data,
-            )
-            db.add(assistant_msg)
-            await db.commit()
-            await db.refresh(assistant_msg)
-            return assistant_msg
+    # Step 1: Query routing to SQL Fact Database (bypass if disabled by user settings)
+    if sql_routing_enabled:
+        route_info = await _route_query(body.content)
+        if route_info.get("is_structured"):
+            logger.info("Routed query to SQL facts: %s", route_info)
+            fact_data = await _fetch_financial_fact(db, route_info)
+            if fact_data:
+                logger.info("Found exact structured fact: %s", fact_data)
+                value_formatted = format_vnd_amount(fact_data["value"])
+                user_prompt = FACT_PROMPT.format(
+                    company_name=fact_data["company_name"],
+                    ticker=fact_data["ticker"],
+                    metric_alias=fact_data["metric_alias"] or fact_data["metric_name"],
+                    metric_name=fact_data["metric_name"],
+                    period=fact_data["period"],
+                    value_formatted=value_formatted,
+                    value=f"{fact_data['value']:,.0f}".replace(",", "."),
+                    currency=fact_data["currency"] or "VND",
+                    source_page=fact_data["source_page"] or "—",
+                    doc_title=fact_data["doc_title"] or fact_data["original_filename"] or "Báo cáo"
+                )
+                answer = await gemini_generate(SYSTEM_PROMPT, user_prompt)
+                
+                citations_data = {
+                    "is_db_verified": True,
+                    "sources": [
+                        {
+                            "chunk_id": "db_fact",
+                            "document_id": str(fact_data["doc_id"]),
+                            "section": fact_data["metric_alias"] or fact_data["metric_name"],
+                            "page_start": fact_data["source_page"],
+                            "page_end": fact_data["source_page"],
+                            "company_id": None,
+                            "fiscal_year": None,
+                            "fiscal_quarter": None,
+                            "report_type": None,
+                            "report_period": fact_data["period"],
+                            "score": 1.0,
+                            "ticker": fact_data["ticker"],
+                            "company_name": fact_data["company_name"],
+                            "doc_title": fact_data["doc_title"] or fact_data["original_filename"] or "Báo cáo",
+                            "content": f"Chỉ tiêu trích xuất chính thức: {fact_data['metric_alias'] or fact_data['metric_name']}\nSố liệu: {value_formatted} ({fact_data['value']:,.0f} {fact_data['currency']})\nTài liệu: {fact_data['doc_title'] or fact_data['original_filename'] or 'Báo cáo'} · trang {fact_data['source_page'] or '—'}"
+                        }
+                    ]
+                }
+
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=answer,
+                    citations=citations_data,
+                )
+                db.add(assistant_msg)
+                await db.commit()
+                await db.refresh(assistant_msg)
+                return assistant_msg
 
     # Step 2: Hybrid RAG fallback
-    chunks = await _retrieve_chunks(db, body.content, session.scope_filter)
+    chunks = await _retrieve_chunks(
+        db,
+        body.content,
+        session.scope_filter,
+        top_k=top_k,
+        hybrid_ratio=hybrid_ratio
+    )
 
     if not chunks:
         assistant_msg = ChatMessage(
@@ -360,13 +375,21 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-async def _retrieve_chunks(db: AsyncSession, query: str, scope_filter: dict | None = None) -> list[dict]:
+async def _retrieve_chunks(
+    db: AsyncSession,
+    query: str,
+    scope_filter: dict | None = None,
+    top_k: int = 15,
+    hybrid_ratio: int = 70
+) -> list[dict]:
     """Retrieve relevant chunks using Vector (Ollama) + Full-Text Search combined with RRF.
 
     Two-phase approach:
     1) Vector + Keyword FTS Hybrid search with RRF sorting
     2) Same-document expansion on top match
     """
+    candidate_limit = max(30, top_k * 2)
+
     # 1. Vector Search
     vector_results = []
     if settings.embedding_provider == "ollama":
@@ -383,9 +406,9 @@ async def _retrieve_chunks(db: AsyncSession, query: str, scope_filter: dict | No
                 "JOIN documents d ON d.id = c.document_id "
                 "WHERE c.embedding IS NOT NULL "
                 "ORDER BY c.embedding <=> CAST(:emb AS vector) "
-                "LIMIT 30"
+                "LIMIT :limit"
             )
-            result = await db.execute(sql, {"emb": emb_str})
+            result = await db.execute(sql, {"emb": emb_str, "limit": candidate_limit})
             vector_results = [_row_to_dict(r) for r in result.mappings().all()]
         except Exception as e:
             logger.warning("Vector search failed in hybrid: %s", e)
@@ -403,30 +426,36 @@ async def _retrieve_chunks(db: AsyncSession, query: str, scope_filter: dict | No
             "WHERE to_tsvector('simple', c.content) @@ plainto_tsquery('simple', :q) "
             "OR c.content ILIKE :q_like "
             "ORDER BY score DESC "
-            "LIMIT 30"
+            "LIMIT :limit"
         )
-        result = await db.execute(sql, {"q": query, "q_like": f"%{query}%"})
+        result = await db.execute(sql, {"q": query, "q_like": f"%{query}%", "limit": candidate_limit})
         fts_results = [_row_to_dict(r) for r in result.mappings().all()]
     except Exception as e:
         logger.warning("FTS search failed in hybrid: %s", e)
 
-    # 3. Reciprocal Rank Fusion (RRF)
+    # 3. Reciprocal Rank Fusion (RRF) with dynamic weights
     rrf_scores = {}
     item_map = {}
 
-    def add_to_rrf(rank_list):
+    def add_to_rrf(rank_list, weight):
         for rank, item in enumerate(rank_list, start=1):
             item_id = str(item["id"])
             item_map[item_id] = item
-            rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + (1.0 / (60.0 + rank))
+            # Apply weighted rank fusion score
+            rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + weight * (1.0 / (60.0 + rank))
 
-    add_to_rrf(vector_results)
-    add_to_rrf(fts_results)
+    # Weight proportional to Vector and FTS user configurations
+    vector_weight = hybrid_ratio / 100.0
+    fts_weight = (100 - hybrid_ratio) / 100.0
+
+    add_to_rrf(vector_results, vector_weight)
+    add_to_rrf(fts_results, fts_weight)
 
     sorted_ids = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)
 
     hybrid_results = []
-    for item_id in sorted_ids[:15]:
+    # RRF top hybrid results budget up to candidate_limit, to be sliced to top_k later
+    for item_id in sorted_ids[:candidate_limit]:
         item = item_map[item_id]
         item["score"] = round(rrf_scores[item_id] * 30, 2)
         hybrid_results.append(item)
@@ -449,9 +478,9 @@ async def _retrieve_chunks(db: AsyncSession, query: str, scope_filter: dict | No
                 "AND c.section_title IS NOT NULL "
                 "AND length(c.content) > 200 "
                 "ORDER BY c.chunk_index "
-                "LIMIT 15"
+                "LIMIT :limit"
             )
-            expansion_result = await db.execute(expansion_sql, {"doc_id": top_doc_id})
+            expansion_result = await db.execute(expansion_sql, {"doc_id": top_doc_id, "limit": top_k})
             expansion_rows = expansion_result.mappings().all()
 
             added = 0
@@ -475,13 +504,14 @@ async def _retrieve_chunks(db: AsyncSession, query: str, scope_filter: dict | No
             "FROM document_chunks c "
             "JOIN documents d ON d.id = c.document_id "
             "WHERE c.content ILIKE :q "
-            "LIMIT 15"
+            "LIMIT :limit"
         )
-        result = await db.execute(sql, {"q": f"%{query}%"})
+        result = await db.execute(sql, {"q": f"%{query}%", "limit": top_k})
         rows = result.mappings().all()
         hybrid_results = [_row_to_dict(r) for r in rows]
 
-    return hybrid_results
+    # Return exactly top_k chunks requested by the user
+    return hybrid_results[:top_k]
 
 
 def _build_context(chunks: list[dict]) -> tuple[str, dict]:

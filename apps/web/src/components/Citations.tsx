@@ -16,8 +16,11 @@ export function Citations({ sources }: { sources: CitationSource[] }) {
           Nguồn trích dẫn
         </p>
         {isDbVerified && (
-          <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 ring-1 ring-emerald-500/20">
-            <span className="text-[12px]">✓</span> Số liệu Database xác thực
+          <span className="flex items-center gap-1 rounded-full bg-ink-800 px-2 py-0.5 text-[10px] font-medium text-ink-100 ring-1 ring-ink-700">
+            <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            Số liệu Database xác thực
           </span>
         )}
       </div>
@@ -33,11 +36,11 @@ export function Citations({ sources }: { sources: CitationSource[] }) {
             }}
             className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-all ${
               s.is_db_verified
-                ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-300 hover:border-emerald-500/60 hover:bg-emerald-500/10"
+                ? "border-ink-700 bg-ink-800 text-white hover:border-ink-600 hover:bg-ink-750"
                 : "border-ink-800 bg-ink-950/40 text-ink-300 hover:border-ink-700 hover:bg-ink-900/60"
             }`}
           >
-            <span className={`font-semibold ${s.is_db_verified ? "text-emerald-400" : "text-brand-400"}`}>
+            <span className={`font-semibold ${s.is_db_verified ? "text-white" : "text-ink-400"}`}>
               [{i + 1}]
             </span>
             <span className="truncate max-w-[120px] sm:max-w-[200px]">
@@ -114,17 +117,20 @@ export function Citations({ sources }: { sources: CitationSource[] }) {
                 <div className="rounded-xl border border-ink-800 bg-ink-950/30 p-3">
                   <p className="text-[10px] text-ink-500 uppercase font-medium">Độ xác thực</p>
                   {selected.is_db_verified ? (
-                    <span className="mt-1 inline-flex items-center text-xs font-semibold text-emerald-400 gap-0.5">
-                      ✓ Đã đối soát
+                    <span className="mt-1 inline-flex items-center text-xs font-semibold text-white gap-1">
+                      <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Đã đối soát
                     </span>
                   ) : selected.score != null ? (
                     <span className={`mt-1 inline-flex items-center text-xs font-semibold ${
-                      selected.score >= 0.7 ? "text-emerald-400" : selected.score >= 0.4 ? "text-amber-400" : "text-brand-400"
+                      selected.score >= 0.7 ? "text-white" : selected.score >= 0.4 ? "text-ink-300" : "text-ink-400"
                     }`}>
                       {Math.round(selected.score * 100)}% Match
                     </span>
                   ) : (
-                    <span className="mt-1 inline-flex items-center text-xs font-semibold text-brand-400">
+                    <span className="mt-1 inline-flex items-center text-xs font-semibold text-ink-400">
                       Ngữ cảnh liên quan
                     </span>
                   )}

@@ -166,10 +166,14 @@ export const api = {
   listMessages: (sessionId: string) =>
     request<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`),
 
-  sendMessage: (sessionId: string, content: string) =>
+  sendMessage: (
+    sessionId: string,
+    content: string,
+    settings?: { topK?: number; sqlRouting?: boolean; hybridRatio?: number },
+  ) =>
     request<ChatMessage>(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...settings }),
     }),
 
   search: (q: string, limit = 5) =>

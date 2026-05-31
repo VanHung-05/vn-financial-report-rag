@@ -190,7 +190,11 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, optimisticUser]);
 
     try {
-      const reply = await api.sendMessage(sid, text);
+      const reply = await api.sendMessage(sid, text, {
+        topK: ragSettings.topK,
+        sqlRouting: ragSettings.sqlRouting,
+        hybridRatio: ragSettings.hybridRatio,
+      });
       setMessages((prev) => {
         const withoutTmp = prev.filter((m) => m.id !== optimisticUser.id);
         return [...withoutTmp, { ...optimisticUser, id: `user-${reply.id}` }, reply];
@@ -223,8 +227,10 @@ export function ChatPanel() {
         <div className="flex flex-col min-h-0 flex-1 h-full">
           {/* Logo Header */}
           <div className="mb-6 flex items-center gap-3 border-b border-ink-800/60 pb-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-500 shadow-md shadow-brand-500/10">
-              <span className="text-xl">💬</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-800 border border-ink-700 shadow-md">
+              <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
             </div>
             <div>
               <span className="text-base font-bold tracking-tight text-white block">FinRAG Chat</span>
@@ -235,7 +241,7 @@ export function ChatPanel() {
           <button
             type="button"
             onClick={newSession}
-            className="mb-5 flex items-center justify-center gap-2 w-full rounded-xl bg-brand-600 hover:bg-brand-500 py-3 text-sm font-semibold text-white transition-all shadow-md hover:shadow-brand-500/20 border border-brand-500/20"
+            className="mb-5 flex items-center justify-center gap-2 w-full rounded-xl bg-ink-800 hover:bg-ink-750 py-3 text-sm font-semibold text-white transition-all shadow-sm border border-ink-700"
           >
             + Cuộc hội thoại mới
           </button>
@@ -274,7 +280,9 @@ export function ChatPanel() {
         {/* Chat Header */}
         <div className="flex items-center justify-between border-b border-ink-800 px-6 py-4 bg-ink-950/40 shrink-0">
           <div className="flex items-center gap-3">
-            <span className="text-xl">💬</span>
+            <svg className="h-5 w-5 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
             <div>
               <h2 className="text-base font-bold text-white leading-tight">FinRAG Chat</h2>
               <p className="text-xs text-ink-400 mt-0.5">Trợ lý phân tích báo cáo tài chính doanh nghiệp Việt Nam</p>
@@ -282,12 +290,34 @@ export function ChatPanel() {
           </div>
           
           <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="flex items-center gap-1.5 rounded-xl border border-ink-800 bg-ink-900/60 hover:bg-ink-800 px-4 py-2.5 text-sm font-semibold text-ink-300 hover:text-white transition-all shadow-md"
+            >
+              <svg className="h-4 w-4 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+              </svg>
+              Trang chủ
+            </Link>
+            <Link
+              href="/documents"
+              className="flex items-center gap-1.5 rounded-xl border border-ink-800 bg-ink-900/60 hover:bg-ink-800 px-4 py-2.5 text-sm font-semibold text-ink-300 hover:text-white transition-all shadow-md"
+            >
+              <svg className="h-4 w-4 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              Quản trị
+            </Link>
             <button
               type="button"
               onClick={() => setShowSettings(true)}
               className="flex items-center gap-2 rounded-xl border border-ink-800 bg-ink-900/60 hover:bg-ink-800 px-4 py-2.5 text-sm font-semibold text-ink-300 hover:text-white transition-all shadow-md"
             >
-              ⚙ Cài đặt truy xuất
+              <svg className="h-4 w-4 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              Cài đặt
             </button>
           </div>
         </div>
@@ -321,13 +351,16 @@ export function ChatPanel() {
                 <div
                   className={`max-w-[85%] rounded-2xl px-5 py-4 leading-relaxed transition-all shadow-md ${
                     m.role === "user"
-                      ? "bg-brand-600 text-white"
+                      ? "bg-ink-800 text-white border border-ink-700"
                       : "border border-ink-700 bg-ink-900/80 text-ink-100"
                   }`}
                 >
                   {m.role === "assistant" && m.citations?.is_db_verified && (
-                    <div className="mb-2.5 flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/20 max-w-max">
-                      <span className="text-[14px]">✓</span> Số liệu Database xác thực
+                    <div className="mb-2.5 flex items-center gap-1.5 rounded-lg bg-ink-800 px-2.5 py-1 text-xs font-semibold text-ink-100 border border-ink-700 max-w-max">
+                      <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Số liệu Database xác thực
                     </div>
                   )}
 
@@ -377,9 +410,11 @@ export function ChatPanel() {
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="absolute right-3.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-xl bg-brand-600 hover:bg-brand-500 text-white disabled:cursor-not-allowed disabled:opacity-40 transition-all shadow-md"
+              className="absolute right-3.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-xl bg-white hover:bg-ink-100 text-ink-950 disabled:cursor-not-allowed disabled:bg-ink-800 disabled:text-ink-500 transition-all shadow-md"
             >
-              ➔
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
             </button>
           </div>
           <p className="mt-2.5 text-xs text-ink-500 font-medium tracking-wide">
@@ -396,7 +431,10 @@ export function ChatPanel() {
             {/* Header */}
             <div className="flex items-center justify-between border-b border-ink-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="text-xl">⚙</span>
+                <svg className="h-5 w-5 text-ink-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
                 <h3 className="text-base font-bold text-white">Cài đặt cấu hình RAG</h3>
               </div>
               <button
