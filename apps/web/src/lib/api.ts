@@ -85,6 +85,11 @@ export type CitationSource = {
   report_type?: string;
   report_period?: string;
   score?: number;
+  content?: string;
+  ticker?: string;
+  company_name?: string;
+  doc_title?: string;
+  is_db_verified?: boolean;
 };
 
 export type ChatMessage = {
@@ -92,7 +97,7 @@ export type ChatMessage = {
   session_id: string;
   role: "user" | "assistant" | string;
   content: string;
-  citations: { sources?: CitationSource[] } | null;
+  citations: { sources?: CitationSource[]; is_db_verified?: boolean } | null;
 };
 
 export type DocumentCreate = {

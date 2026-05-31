@@ -27,3 +27,28 @@ body {
     scrollbar-color: #334155 transparent;
   }
 }
+
+/* Hide Next.js Dev Indicator completely in all browsers and formats */
+#nextjs-portal, 
+[data-nextjs-toast-wrapper], 
+#nextjs-dev-indicator,
+[data-nextjs-dev-indicator],
+.nextjs-toast-errors-parent,
+nextjs-dev-indicator,
+.__next-prerender-indicator,
+#__next-prerender-indicator {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Strictly lock viewport scrolling for Chat and Admin panels to keep layout pinned */
+body:has(#chat-page-root),
+body:has(#admin-page-root),
+html:has(#chat-page-root),
+html:has(#admin-page-root) {
+  overflow: hidden !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+}

@@ -137,6 +137,10 @@ def _run_ingestion(db: Session, document_id: str):
         sa_text("DELETE FROM document_pages WHERE document_id=:id"),
         {"id": document_id},
     )
+    db.execute(
+        sa_text("DELETE FROM financial_facts WHERE document_id=:id"),
+        {"id": document_id},
+    )
     db.commit()
 
     _update_status(db, document_id, "downloading", "downloading", 5)
@@ -353,6 +357,72 @@ def _run_ingestion(db: Session, document_id: str):
         {"pc": total_chunks, "id": document_id},
     )
     db.commit()
+
+    # Extract & Store financial facts
+    _update_status(db, document_id, "normalizing_financial_data", "extracting_financial_facts", 90)
+    try:
+        import asyncio
+        from worker.parsers.financial_extractor import extract_financial_facts
+
+        # Helper to run async in sync
+        def run_async(coro):
+            try:
+                return asyncio.run(coro)
+            except RuntimeError:
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                return loop.run_until_complete(coro)
+
+        ticker = None
+        if row["company_id"]:
+            company_row = db.execute(
+                sa_text("SELECT ticker FROM companies WHERE id=:cid"),
+                {"cid": row["company_id"]}
+            ).mappings().first()
+            if company_row:
+                ticker = company_row["ticker"]
+
+        doc_meta = {
+            "ticker": ticker,
+            "fiscal_year": row["fiscal_year"],
+            "fiscal_quarter": row["fiscal_quarter"],
+        }
+
+        facts = run_async(extract_financial_facts(pages, doc_meta))
+        for fact in facts:
+            metric_name = fact.get("metric_name")
+            value = fact.get("value")
+            if not metric_name or value is None:
+                continue
+
+            db.execute(
+                sa_text(
+                    "INSERT INTO financial_facts "
+                    "(id, document_id, company_id, statement_type, metric_name, metric_alias, "
+                    "period, value, currency, unit_scale, source_page, confidence) "
+                    "VALUES (gen_random_uuid(), :doc_id, :company_id, :stype, :mname, :malias, "
+                    ":period, :val, :curr, :scale, :page, :conf)"
+                ),
+                {
+                    "doc_id": document_id,
+                    "company_id": row["company_id"],
+                    "stype": fact.get("statement_type"),
+                    "mname": metric_name,
+                    "malias": fact.get("metric_alias"),
+                    "period": fact.get("period") or row["report_period"] or f"{row['fiscal_year']}",
+                    "val": float(value),
+                    "curr": fact.get("currency") or "VND",
+                    "scale": fact.get("unit_scale") or "VND",
+                    "page": fact.get("source_page"),
+                    "conf": 0.9,
+                }
+            )
+        db.commit()
+    except Exception as e:
+        logger.exception("Failed to extract or store financial facts: %s", e)
 
     # Mark ready
     _update_status(db, document_id, "ready", "complete", 100)
